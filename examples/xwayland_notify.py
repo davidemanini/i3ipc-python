@@ -12,10 +12,7 @@ import sys
 INFO_TO_BE_COPIED = ["id", "name", "pid"]
 
 def retrive_win_info(win):
-    info = {}
-    for i in INFO_TO_BE_COPIED:
-        info[i]=win[i]
-
+    info = {i: win[i] for i in INFO_TO_BE_COPIED}
     info["psname"]=psutil.Process(win["pid"]).name()
     return info
 
@@ -27,15 +24,37 @@ class App:
         body = self.format_body.format(**win_info)
         return subprocess.Popen(self.notify_args + [summary, body])
 
-    def _window_event(self):
-        def new_window(connection, e):
+    def _new_window_event(self):
+        if self.wait_window_name:
+            def new_window(connection, e):
+                win = e.ipc_data["container"]
+                if win["shell"] == "xwayland":
+                    if win["name"]:
+                        self._send_notify(win)
+                    else:
+                        self.unamed_windows.append(win["id"])
+            return new_window
+        else:
+            def new_window(connection, e):
+                win = e.ipc_data["container"]
+                if win["shell"] == "xwayland":
+                    self._send_notify(win)
+            return new_window
+
+
+    def _title_window_event(self):
+        def title_window(connection, e):
             win = e.ipc_data["container"]
-            if win["shell"] == "xwayland":
+            try:
+                self.unamed_windows.remove(win["id"])
                 self._send_notify(win)
-        return new_window
+            except ValueError:
+                pass
+        return title_window
 
 
-    def __init__(self, format_summary, format_body, expire_time=None,
+    def __init__(self, format_summary, format_body, wait_window_name=False,
+                 expire_time=None,
                  icon=None, app_name=None):
         
         self.format_body = format_body
@@ -50,10 +69,14 @@ class App:
         if expire_time:
             self.notify_args += ["-t", str(expire_time)]
 
-        
         self.i3 = i3ipc.Connection()
-        self.i3.on(i3ipc.Event.WINDOW_NEW, self._window_event())
 
+        self.wait_window_name=wait_window_name
+        if wait_window_name:
+            self.unamed_windows=[]        
+            self.i3.on(i3ipc.Event.WINDOW_TITLE, self._title_window_event())
+
+        self.i3.on(i3ipc.Event.WINDOW_NEW, self._new_window_event())
 
         
     def run(self):
@@ -84,10 +107,14 @@ Supported keys are:
     parser.add_argument("-b", "--body", default="process name: {psname}",
                         type=str,
                         help='Format the body of notification')
+    parser.add_argument("-n", "--wait-for-name", default=False,
+                        action="store_true",
+                        help='Wait that a window name become non-null')
 
 
     arg = parser.parse_args()
     app =App(icon=arg.icon, format_summary=arg.summary,
              format_body=arg.body, app_name=sys.argv[0],
-             expire_time=arg.expire_time)
+             expire_time=arg.expire_time,
+             wait_window_name=arg.wait_for_name)
     app.run()
